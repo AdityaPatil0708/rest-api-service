@@ -1,32 +1,9 @@
 stages:
-  - validate
   - docker
   - deploy
 
 # -----------------------------
-# 1. Validate Code (optional)
-# -----------------------------
-lint:
-  stage: validate
-  image: node:18
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  script:
-    - npm ci
-    - npm run lint || echo "No lint script"
-
-test:
-  stage: validate
-  image: node:18
-  needs: ["lint"]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  script:
-    - npm ci
-    - npm test || echo "No tests"
-
-# -----------------------------
-# 2. Build & Push Docker Image
+# 1. Build & Push to Docker Hub
 # -----------------------------
 docker-build-push:
   stage: docker
@@ -34,33 +11,25 @@ docker-build-push:
   services:
     - docker:24-dind
   variables:
-    DOCKER_TLS_CERTDIR: ""
-    IMAGE_VERSIONED: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
-    IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    DOCKER_IMAGE: $DOCKER_HUB_USERNAME/$DOCKER_HUB_REPO
+    DOCKER_TAG: $CI_COMMIT_SHORT_SHA
   before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+    - echo "$DOCKER_HUB_PASSWORD" | docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
   script:
-    - docker build -t $IMAGE_VERSIONED .
-    - docker push $IMAGE_VERSIONED
-    - docker tag $IMAGE_VERSIONED $IMAGE_LATEST
-    - docker push $IMAGE_LATEST
-  artifacts:
-    reports:
-      dotenv: build.env
-  after_script:
-    - echo "IMAGE_VERSIONED=$IMAGE_VERSIONED" > build.env
+    - docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+    - docker push $DOCKER_IMAGE:$DOCKER_TAG
+    - docker tag $DOCKER_IMAGE:$DOCKER_TAG $DOCKER_IMAGE:latest
+    - docker push $DOCKER_IMAGE:latest
+  only:
+    - main
 
 # -----------------------------
-# 3. Deploy to Server
+# 2. Deploy to Server
 # -----------------------------
 deploy:
   stage: deploy
   image: alpine:latest
   needs: ["docker-build-push"]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
   before_script:
     - apk add --no-cache openssh-client
     - eval $(ssh-agent -s)
@@ -69,12 +38,11 @@ deploy:
     - echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
   script:
     - ssh -p ${SSH_PORT:-22} $DEPLOY_USER@$DEPLOY_HOST "
-        docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY &&
-        docker pull $IMAGE_VERSIONED &&
+        docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD &&
+        docker pull $DOCKER_IMAGE:$DOCKER_TAG &&
         docker stop ${CONTAINER_NAME:-my-api} || true &&
         docker rm ${CONTAINER_NAME:-my-api} || true &&
-        docker run -d --name ${CONTAINER_NAME:-my-api} -p ${HOST_PORT:-3000}:${CONTAINER_PORT:-3000} $IMAGE_VERSIONED
+        docker run -d --name ${CONTAINER_NAME:-my-api} -p ${HOST_PORT:-3000}:${CONTAINER_PORT:-3000} $DOCKER_IMAGE:$DOCKER_TAG
       "
-  environment:
-    name: production
-    url: http://$DEPLOY_HOST:${HOST_PORT:-3000}
+  only:
+    - main
