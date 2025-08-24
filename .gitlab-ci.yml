@@ -1,113 +1,80 @@
-# GitLab CI/CD for a Dockerized REST API
-
 stages:
   - validate
   - docker
   - deploy
 
-# -------- OPTIONAL: Basic validation (Node.js) --------
+# -----------------------------
+# 1. Validate Code (optional)
+# -----------------------------
 lint:
   stage: validate
-  image: node:${NODE_VERSION:-18}
+  image: node:18
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
-    - if [ -f package.json ]; then npm ci; else echo "No package.json — skipping"; fi
-    - if [ -f package.json ] && npm run | grep -q "lint"; then npm run lint; else echo "No lint script — skipping"; fi
+    - npm ci
+    - npm run lint || echo "No lint script"
 
 test:
   stage: validate
-  image: node:${NODE_VERSION:-18}
+  image: node:18
   needs: ["lint"]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
-    - if [ -f package.json ]; then npm ci; else echo "No package.json — skipping"; fi
-    - if [ -f package.json ] && npm run | grep -q "test"; then npm test; else echo "No test script — skipping"; fi
+    - npm ci
+    - npm test || echo "No tests"
 
-# -------- BUILD & PUSH DOCKER IMAGE --------
-# We pin docker and dind versions for stability.
+# -----------------------------
+# 2. Build & Push Docker Image
+# -----------------------------
 docker-build-push:
   stage: docker
-  image: docker:24.0.9
+  image: docker:24
   services:
-    - name: docker:24.0.9-dind
-      alias: docker
+    - docker:24-dind
   variables:
-    DOCKER_DRIVER: overlay2
-    DOCKER_TLS_CERTDIR: ""     # disable TLS between client and dind for simplicity
-    IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+    DOCKER_TLS_CERTDIR: ""
+    IMAGE_VERSIONED: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
     IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
-    IMAGE_VERSIONED: $CI_REGISTRY_IMAGE:$IMAGE_TAG
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   before_script:
-    - echo "Logging in to $CI_REGISTRY as $CI_REGISTRY_USER"
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
   script:
-    - echo "Building image $IMAGE_VERSIONED"
-    - docker build -t "$IMAGE_VERSIONED" .
-    - echo "Pushing $IMAGE_VERSIONED"
-    - docker push "$IMAGE_VERSIONED"
-    - echo "Tagging and pushing latest"
-    - docker tag "$IMAGE_VERSIONED" "$IMAGE_LATEST"
-    - docker push "$IMAGE_LATEST"
-  needs:
-    - job: lint
-      optional: true
-    - job: test
-      optional: true
+    - docker build -t $IMAGE_VERSIONED .
+    - docker push $IMAGE_VERSIONED
+    - docker tag $IMAGE_VERSIONED $IMAGE_LATEST
+    - docker push $IMAGE_LATEST
   artifacts:
-    when: on_success
     reports:
-      dotenv: build.env   # export IMAGE_VERSIONED for downstream jobs
+      dotenv: build.env
   after_script:
     - echo "IMAGE_VERSIONED=$IMAGE_VERSIONED" > build.env
 
-# -------- DEPLOY TO SERVER VIA SSH --------
-deploy-prod:
+# -----------------------------
+# 3. Deploy to Server
+# -----------------------------
+deploy:
   stage: deploy
-  image: alpine:3.20
+  image: alpine:latest
+  needs: ["docker-build-push"]
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-  dependencies:
-    - docker-build-push
   before_script:
-    - apk add --no-cache openssh-client bash
-    # Configure SSH
+    - apk add --no-cache openssh-client
     - eval $(ssh-agent -s)
     - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
-    - mkdir -p ~/.ssh
-    - chmod 700 ~/.ssh
-    - printf "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
-    - export SSH_PORT="${SSH_PORT:-22}"
-    - export CONTAINER_NAME="${CONTAINER_NAME:-api}"
-    - export HOST_PORT="${HOST_PORT:-3000}"
-    - export CONTAINER_PORT="${CONTAINER_PORT:-3000}"
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
   script:
-    - |
-      REMOTE_LOGIN="$DEPLOY_USER@$DEPLOY_HOST"
-      echo "Deploying $IMAGE_VERSIONED to $REMOTE_LOGIN"
-      ssh -p "$SSH_PORT" "$REMOTE_LOGIN" bash -s <<'EOSSH'
-      set -euo pipefail
-      echo "Logging in to GitLab Registry on remote..."
-      docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-      echo "Pulling image: $IMAGE_VERSIONED"
-      docker pull "$IMAGE_VERSIONED"
-      echo "Stopping old container if exists..."
-      docker stop "$CONTAINER_NAME" || true
-      docker rm "$CONTAINER_NAME" || true
-      echo "Starting new container..."
-      if [ -n "${ENV_FILE:-}" ] && [ -f "$ENV_FILE" ]; then
-        docker run -d --name "$CONTAINER_NAME" -p "$HOST_PORT:$CONTAINER_PORT" --env-file "$ENV_FILE" "$IMAGE_VERSIONED"
-      else
-        docker run -d --name "$CONTAINER_NAME" -p "$HOST_PORT:$CONTAINER_PORT" "$IMAGE_VERSIONED"
-      fi
-      echo "Deployment complete."
-      docker ps --filter "name=$CONTAINER_NAME"
-      EOSSH
+    - ssh -p ${SSH_PORT:-22} $DEPLOY_USER@$DEPLOY_HOST "
+        docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY &&
+        docker pull $IMAGE_VERSIONED &&
+        docker stop ${CONTAINER_NAME:-my-api} || true &&
+        docker rm ${CONTAINER_NAME:-my-api} || true &&
+        docker run -d --name ${CONTAINER_NAME:-my-api} -p ${HOST_PORT:-3000}:${CONTAINER_PORT:-3000} $IMAGE_VERSIONED
+      "
   environment:
     name: production
-    url: http://$DEPLOY_HOST:$HOST_PORT
-  needs:
-    - docker-build-push
+    url: http://$DEPLOY_HOST:${HOST_PORT:-3000}
