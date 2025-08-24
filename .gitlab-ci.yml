@@ -1,0 +1,32 @@
+image: docker:latest
+
+services:
+  - docker:dind  # Docker in Docker to build images
+
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+
+stages:
+  - build
+  - deploy
+
+before_script:
+  - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin $CI_REGISTRY
+
+build:
+  stage: build
+  script:
+    - docker build -t $IMAGE_NAME .
+    - docker push $IMAGE_NAME
+  only:
+    - main  # change to your main branch name
+
+deploy:
+  stage: deploy
+  script:
+    - echo "Deploy step goes here"
+    # Example for a server:
+    # - ssh user@server "docker pull $IMAGE_NAME && docker run -d -p 3000:3000 $IMAGE_NAME"
+  only:
+    - main
