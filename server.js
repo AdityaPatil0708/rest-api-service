@@ -3,7 +3,9 @@ const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const itemRoutes = require('./routes/itemRoutes');
 
-dotenv.config();
+dotenv.config({
+   path:"/.env" 
+})
 const app = express();
 app.use(express.json());
 app.use('/api/items', itemRoutes);
