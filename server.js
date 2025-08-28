@@ -9,8 +9,10 @@ dotenv.config({
 const app = express();
 app.use(express.json());
 app.use('/api/items', itemRoutes);
-
-mongoose.connect(process.env.MONGO_URL).then(() => {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, '0.0.0.0', () => console.log(`Listening ${PORT}`));
+mongoose.connect(process.env.MONGO_URL)
+.then(() => {
+    console.log("Connected to MongoDB");
 }).catch(err => console.log(err));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => console.log(`Listening ${PORT}`));
