@@ -21,7 +21,10 @@ jobs:
 
       - name: Install dependencies
         run: npm install
- 
+            
+      - name: 
+        run: npm install
+
       - name: Build Docker image
         run: docker build -t my-rest-api-service .
 
